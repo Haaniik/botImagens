@@ -1,0 +1,10 @@
+# Credenciais — nunca subir pro GitHub ou compartilhar
+.env
+
+# Estado do bot — gerado automaticamente
+config.json
+tag_pool.json
+day_tag.json
+
+# Dependências
+node_modules/
