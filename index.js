@@ -25,6 +25,9 @@ if (!DISCORD_TOKEN || !GELBOORU_API_KEY || !GELBOORU_USER_ID) {
     process.exit(1);
 }
 
+// Dono do bot — único que pode usar comandos restritos
+const OWNER_ID = "115936058943864836";
+
 // Configurações do bot — ficam no config.json (pode compartilhar)
 let config = JSON.parse(fs.readFileSync('config.json', 'utf8'));
 
@@ -415,6 +418,10 @@ const commands = [
         .setDescription("Mostra a tag do dia"),
 
     new SlashCommandBuilder()
+        .setName("refreshtag")
+        .setDescription("Troca a tag do dia por uma nova aleatória (só o dono do bot)"),
+
+    new SlashCommandBuilder()
         .setName("pesquisar")
         .setDescription("Pesquisar imagens no Gelbooru")
         .addStringOption(o => o.setName("tags").setDescription("Tags do Gelbooru (ex: blue_hair smile)").setRequired(true))
@@ -474,6 +481,17 @@ client.on("interactionCreate", async interaction => {
                     embeds: built.embeds,
                     files:  built.attachments,
                 });
+                break;
+            }
+
+            case "refreshtag": {
+                if (interaction.user.id !== OWNER_ID) {
+                    return interaction.reply({ content: "❌ Só o dono do bot pode usar esse comando.", ephemeral: true });
+                }
+                // Força nova tag deletando a do dia atual
+                if (fs.existsSync(DAY_TAG_FILE)) fs.unlinkSync(DAY_TAG_FILE);
+                const newTag = getDailyTag();
+                await interaction.reply(`🔄 Tag do dia atualizada para: \`${newTag}\``);
                 break;
             }
 
