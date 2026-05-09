@@ -187,9 +187,10 @@ async function buildImageMessage(imageUrls) {
     return { attachments, embeds };
 }
 // ==================== TAG DO DIA ====================
-const TAG_POOL_FILE = "tag_pool.json";
-const DAY_TAG_FILE  = "day_tag.json";
-const MIN_POST_COUNT = 1000;
+const TAG_POOL_FILE       = "tag_pool.json";
+const COPYRIGHT_POOL_FILE = "copyright_pool.json";
+const DAY_TAG_FILE        = "day_tag.json";
+const MIN_POST_COUNT      = 1000;
 
 const TAG_BLACKLIST = new Set([
     // Meta / qualidade
@@ -207,11 +208,26 @@ const TAG_BLACKLIST = new Set([
     "anal_beads", "male_focus", "bdsm",
 ]);
 
-let TAG_POOL = [];
+// Tags de copyright (series) a ignorar
+const COPYRIGHT_BLACKLIST = new Set([
+    "original", "original_character",
+]);
+
+let TAG_POOL       = [];
+let COPYRIGHT_POOL = [];
 
 function getTodayKey() {
     const brt = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
     return `${brt.getFullYear()}-${brt.getMonth() + 1}-${brt.getDate()}`;
+}
+
+function isOddDay() {
+    const brt = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
+    return brt.getDate() % 2 !== 0;
+}
+
+function getActivePool() {
+    return isOddDay() ? COPYRIGHT_POOL : TAG_POOL;
 }
 
 function getDailyTag() {
@@ -222,31 +238,20 @@ function getDailyTag() {
     const todayKey = getTodayKey();
     if (data.date === todayKey && data.tag) return data.tag;
 
+    const pool = getActivePool();
     let newTag;
     do {
-        newTag = TAG_POOL[Math.floor(Math.random() * TAG_POOL.length)];
-    } while (newTag === data.tag && TAG_POOL.length > 1);
+        newTag = pool[Math.floor(Math.random() * pool.length)];
+    } while (newTag === data.tag && pool.length > 1);
 
-    fs.writeFileSync(DAY_TAG_FILE, JSON.stringify({ date: todayKey, tag: newTag }, null, 2));
-    console.log(`🏷️ Tag do dia: ${newTag}`);
+    const poolType = isOddDay() ? "copyright" : "general";
+    fs.writeFileSync(DAY_TAG_FILE, JSON.stringify({ date: todayKey, tag: newTag, pool: poolType }, null, 2));
+    console.log(`🏷️ Tag do dia (${poolType}): ${newTag}`);
     return newTag;
 }
 
-async function fetchAndCacheTagPool() {
-    if (fs.existsSync(TAG_POOL_FILE)) {
-        try {
-            const cached = JSON.parse(fs.readFileSync(TAG_POOL_FILE, "utf8"));
-            if (cached.date === getTodayKey() && Array.isArray(cached.tags) && cached.tags.length > 0) {
-                TAG_POOL = cached.tags;
-                console.log(`🏷️ Pool de tags do cache (Gelbooru): ${TAG_POOL.length} tags`);
-                return;
-            }
-        } catch {}
-    }
-
-    console.log("🔄 Buscando tags do Gelbooru (1000+ posts)...");
+async function fetchTagsByType(type, typeLabel, blacklist) {
     const allTags = [];
-
     try {
         for (let pid = 0; pid < 20; pid++) {
             const params = new URLSearchParams({
@@ -259,6 +264,7 @@ async function fetchAndCacheTagPool() {
                 orderby: "count",
                 limit:   100,
                 pid,
+                type,
             });
             const res = await fetch(`https://gelbooru.com/index.php?${params}`, {
                 headers: { "User-Agent": "DiscordBot/1.0" }
@@ -273,8 +279,7 @@ async function fetchAndCacheTagPool() {
                 if (
                     tag.count >= MIN_POST_COUNT &&
                     tag.name &&
-                    tag.type === 0 &&   // 0 = general tags
-                    !TAG_BLACKLIST.has(tag.name) &&
+                    !blacklist.has(tag.name) &&
                     !tag.name.startsWith("rating:") &&
                     !tag.name.match(/^\d+$/)
                 ) {
@@ -288,23 +293,54 @@ async function fetchAndCacheTagPool() {
             await new Promise(r => setTimeout(r, 300));
         }
     } catch (err) {
-        console.error("Erro ao buscar tags:", err);
+        console.error(`Erro ao buscar tags (${typeLabel}):`, err);
+    }
+    return allTags;
+}
+
+async function fetchAndCacheTagPool() {
+    const todayKey = getTodayKey();
+
+    // Pool geral (type 0)
+    if (fs.existsSync(TAG_POOL_FILE)) {
+        try {
+            const cached = JSON.parse(fs.readFileSync(TAG_POOL_FILE, "utf8"));
+            if (cached.date === todayKey && Array.isArray(cached.tags) && cached.tags.length > 0) {
+                TAG_POOL = cached.tags;
+                console.log(`🏷️ Pool geral do cache: ${TAG_POOL.length} tags`);
+            }
+        } catch {}
+    }
+    if (TAG_POOL.length === 0) {
+        console.log("🔄 Buscando tags gerais do Gelbooru...");
+        const tags = await fetchTagsByType(0, "general", TAG_BLACKLIST);
+        if (tags.length > 0) {
+            TAG_POOL = tags;
+            fs.writeFileSync(TAG_POOL_FILE, JSON.stringify({ date: todayKey, tags: TAG_POOL }, null, 2));
+            console.log(`✅ Pool geral: ${TAG_POOL.length} tags`);
+        } else {
+            console.warn("⚠️ Fallback pool geral");
+            TAG_POOL = ["blue_hair", "blonde_hair", "red_hair", "black_hair", "white_hair",
+                "long_hair", "short_hair", "twintails", "animal_ears", "school_uniform",
+                "dress", "swimsuit", "thighhighs", "smile", "flowers"];
+        }
     }
 
-    if (allTags.length === 0) {
-        console.warn("⚠️ Usando fallback de tags embutido");
-        TAG_POOL = [
-            "blue_hair", "blonde_hair", "red_hair", "black_hair", "white_hair",
-            "pink_hair", "long_hair", "short_hair", "twintails", "ponytail",
-            "animal_ears", "wings", "school_uniform", "kimono", "maid",
-            "dress", "swimsuit", "thighhighs", "sword", "smile",
-            "touhou", "kantai_collection", "azur_lane", "vocaloid", "hatsune_miku",
-            "night", "rain", "snow", "flowers", "ocean",
-        ];
-    } else {
-        TAG_POOL = allTags;
-        fs.writeFileSync(TAG_POOL_FILE, JSON.stringify({ date: getTodayKey(), tags: TAG_POOL }, null, 2));
-        console.log(`✅ Pool atualizado (Gelbooru): ${TAG_POOL.length} tags com ${MIN_POST_COUNT}+ posts`);
+    // Pool copyright/series — dias impares
+    // Carregada do arquivo copyright_pool_default.json
+    if (COPYRIGHT_POOL.length === 0) {
+        try {
+            const raw = JSON.parse(fs.readFileSync("copyright_pool_default.json", "utf8"));
+            COPYRIGHT_POOL = raw.filter(t => !COPYRIGHT_BLACKLIST.has(t));
+            console.log(`🎌 Pool copyright carregada: ${COPYRIGHT_POOL.length} series`);
+        } catch (err) {
+            console.warn("⚠️ copyright_pool_default.json não encontrado — usando fallback");
+            COPYRIGHT_POOL = [
+                "touhou", "kantai_collection", "blue_archive", "arknights",
+                "genshin_impact", "hololive", "nijisanji", "vocaloid",
+                "azur_lane", "fate_(series)", "pokemon", "idolmaster",
+            ];
+        }
     }
 }
 
@@ -490,8 +526,9 @@ client.on("interactionCreate", async interaction => {
                 }
                 // Força nova tag deletando a do dia atual
                 if (fs.existsSync(DAY_TAG_FILE)) fs.unlinkSync(DAY_TAG_FILE);
-                const newTag = getDailyTag();
-                await interaction.reply(`🔄 Tag do dia atualizada para: \`${newTag}\``);
+                const newTag  = getDailyTag();
+                const poolType = isOddDay() ? "series 🎌" : "geral 🏷️";
+                await interaction.reply(`🔄 Tag do dia atualizada para: \`${newTag}\` (pool ${poolType})`);
                 break;
             }
 
