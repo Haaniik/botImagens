@@ -398,15 +398,26 @@ async function sendImages() {
 
 // ==================== AGENDAMENTO ====================
 let hourlyJob = null;
+let lastDayKey = null;
 
 async function scheduleMessages() {
     if (hourlyJob) { hourlyJob.cancel(); hourlyJob = null; }
 
     await fetchAndCacheTagPool();
+    lastDayKey = getTodayKey();
 
     sendImages().catch(err => console.error("[sendImages] Erro inicial:", err));
 
     hourlyJob = schedule.scheduleJob("0 * * * *", () => {
+        const todayKey = getTodayKey();
+
+        // Virou o dia — reseta a tag pra pegar a pool correta (par/impar)
+        if (todayKey !== lastDayKey) {
+            console.log(`\uD83C\uDF05 Novo dia (${todayKey}) — resetando tag do dia`);
+            if (fs.existsSync(DAY_TAG_FILE)) fs.unlinkSync(DAY_TAG_FILE);
+            lastDayKey = todayKey;
+        }
+
         fetchAndCacheTagPool().then(() => {
             sendImages().catch(err => console.error("[sendImages] Erro horário:", err));
         });
