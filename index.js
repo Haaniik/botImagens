@@ -19,10 +19,15 @@ const fetch = globalThis.fetch;
 const DISCORD_TOKEN     = process.env.DISCORD_TOKEN;
 const GELBOORU_API_KEY  = process.env.GELBOORU_API_KEY;
 const GELBOORU_USER_ID  = process.env.GELBOORU_USER_ID;
+const RULE34_USER_ID    = process.env.RULE34_USER_ID;
+const RULE34_API_KEY    = process.env.RULE34_API_KEY;
 
 if (!DISCORD_TOKEN || !GELBOORU_API_KEY || !GELBOORU_USER_ID) {
     console.error("❌ Credenciais faltando no .env! Verifique DISCORD_TOKEN, GELBOORU_API_KEY e GELBOORU_USER_ID.");
     process.exit(1);
+}
+if (!RULE34_USER_ID || !RULE34_API_KEY) {
+    console.warn("⚠️ RULE34_USER_ID ou RULE34_API_KEY não definidos — fallback Rule34 desativado.");
 }
 
 // Dono do bot — único que pode usar comandos restritos
@@ -34,11 +39,17 @@ let config = JSON.parse(fs.readFileSync('config.json', 'utf8'));
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages] });
 client.commands = new Collection();
 
-// ==================== GELBOORU ====================
-// Rating: general, sensitive, questionable, explicit
+// ==================== GELBOORU + RULE34 ====================
+
 function toGelbooruRating(rating) {
     const map = { general: "general", safe: "general", sensitive: "sensitive", questionable: "questionable", explicit: "explicit" };
     return map[rating] || "sensitive";
+}
+
+function toRule34Rating(rating) {
+    // Rule34 usa rating como tag: rating:general, rating:questionable etc
+    const map = { general: "rating:general", safe: "rating:general", sensitive: "rating:sensitive", questionable: "rating:questionable", explicit: "rating:explicit" };
+    return map[rating] || "rating:questionable";
 }
 
 function gelbooruParams(extra = {}) {
@@ -53,65 +64,112 @@ function gelbooruParams(extra = {}) {
     });
 }
 
-async function getImages(tags = "", rating = "sensitive", limit = 1, scoreExpr = null) {
+// ── Gelbooru ──────────────────────────────────────────────────
+async function getImagesGelbooru(tags, rating, limit, scoreExpr) {
     const ratingTag = `rating:${toGelbooruRating(rating)}`;
-    let finalTags = [tags?.trim(), ratingTag, scoreExpr ? `score:${scoreExpr}` : ""]
+    const noVideo   = "-webm -mp4 -animated_gif -video";
+    const finalTags = [tags?.trim(), ratingTag, scoreExpr ? `score:${scoreExpr}` : "", noVideo]
         .filter(Boolean).join(" ").trim();
 
-    // Gelbooru: pega até 100 posts aleatórios usando pid aleatório
-    const pid = Math.floor(Math.random() * 50); // página aleatória
+    const pid    = Math.floor(Math.random() * 50);
     const params = gelbooruParams({ tags: finalTags, limit: 100, pid });
-    const url = `https://gelbooru.com/index.php?${params}`;
 
-    try {
-        const res = await fetch(url, { headers: { "User-Agent": "DiscordBot/1.0" } });
-        if (!res.ok) {
-            console.error(`[Gelbooru] ${res.status} — ${url}`);
-            return { error: "⚠️ Erro ao conectar com o Gelbooru." };
-        }
+    const res = await fetch(`https://gelbooru.com/index.php?${params}`, {
+        headers: { "User-Agent": "DiscordBot/1.0" },
+        signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) throw new Error(`Gelbooru HTTP ${res.status}`);
 
-        const data = await res.json();
-        const posts = data?.post;
+    const data  = await res.json();
+    let posts = data?.post;
 
-        if (!Array.isArray(posts) || posts.length === 0) {
-            // Tenta sem pid aleatório (página 0)
-            if (pid > 0) {
-                const params2 = gelbooruParams({ tags: finalTags, limit: 100, pid: 0 });
-                const res2 = await fetch(`https://gelbooru.com/index.php?${params2}`, { headers: { "User-Agent": "DiscordBot/1.0" } });
-                if (res2.ok) {
-                    const data2 = await res2.json();
-                    const posts2 = data2?.post;
-                    if (Array.isArray(posts2) && posts2.length > 0) {
-                        return pickImages(posts2, limit, finalTags);
-                    }
-                }
+    if (!Array.isArray(posts) || posts.length === 0) {
+        if (pid > 0) {
+            const params2 = gelbooruParams({ tags: finalTags, limit: 100, pid: 0 });
+            const res2 = await fetch(`https://gelbooru.com/index.php?${params2}`, {
+                headers: { "User-Agent": "DiscordBot/1.0" },
+                signal: AbortSignal.timeout(8000),
+            });
+            if (res2.ok) {
+                const data2 = await res2.json();
+                posts = data2?.post;
             }
-            const suggestions = await getTagSuggestions(tags);
-            return { error: `❌ Nenhuma imagem encontrada para **${finalTags}**.`, suggestions };
         }
-
-        return pickImages(posts, limit, finalTags);
-
-    } catch (err) {
-        console.error("Erro ao buscar imagens:", err);
-        return { error: "⚠️ Ocorreu um erro ao buscar imagens." };
     }
-}
 
-function pickImages(posts, limit, finalTags) {
+    if (!Array.isArray(posts) || posts.length === 0) return null;
+
     const valid = posts.filter(p =>
         p.file_url &&
         ["jpg", "jpeg", "png", "gif", "webp"].includes(p.image?.split(".").pop()?.toLowerCase() || "")
     );
+    if (valid.length === 0) return null;
 
-    if (valid.length === 0) return { error: "❌ Nenhuma imagem válida encontrada." };
+    const chosen = valid.sort(() => Math.random() - 0.5).slice(0, Math.min(limit, valid.length));
+    console.log(`[Gelbooru] ${chosen.length} imagens — ${finalTags}`);
+    return chosen.map(p => p.file_url);
+}
 
-    const shuffled = valid.sort(() => Math.random() - 0.5);
-    const chosen   = shuffled.slice(0, Math.min(limit, shuffled.length));
-    const urls     = chosen.map(p => p.file_url);
+// ── Rule34 (fallback) ─────────────────────────────────────────
+async function getImagesRule34(tags, rating, limit, scoreExpr) {
+    const ratingTag = toRule34Rating(rating);
+    const noVideo   = "-webm -mp4 -animated_gif";
+    const score     = scoreExpr ? `score:${scoreExpr}` : "score:>50";
+    const finalTags = [tags?.trim(), ratingTag, score, noVideo]
+        .filter(Boolean).join(" ").trim();
 
-    console.log(`[Gelbooru] ${urls.length} imagens — tags: ${finalTags}`);
-    return { images: urls };
+    const pid    = Math.floor(Math.random() * 20);
+    const params = new URLSearchParams({
+        page:    "dapi",
+        s:       "post",
+        q:       "index",
+        json:    "1",
+        limit:   100,
+        pid,
+        tags:    finalTags,
+        user_id: RULE34_USER_ID,
+        api_key: RULE34_API_KEY,
+    });
+
+    const res = await fetch(`https://api.rule34.xxx/index.php?${params}`, {
+        headers: { "User-Agent": "DiscordBot/1.0" },
+        signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) throw new Error(`Rule34 HTTP ${res.status}`);
+
+    const posts = await res.json();
+    if (!Array.isArray(posts) || posts.length === 0) return null;
+
+    const valid = posts.filter(p =>
+        p.file_url &&
+        ["jpg", "jpeg", "png", "gif", "webp"].includes(p.file_url.split(".").pop()?.split("?")[0]?.toLowerCase() || "")
+    );
+    if (valid.length === 0) return null;
+
+    const chosen = valid.sort(() => Math.random() - 0.5).slice(0, Math.min(limit, valid.length));
+    console.log(`[Rule34] ${chosen.length} imagens — ${finalTags}`);
+    return chosen.map(p => p.file_url);
+}
+
+// ── Dispatcher: tenta Gelbooru, cai no Rule34 se falhar ───────
+async function getImages(tags = "", rating = "sensitive", limit = 1, scoreExpr = null) {
+    // Tenta Gelbooru primeiro
+    try {
+        const urls = await getImagesGelbooru(tags, rating, limit, scoreExpr);
+        if (urls && urls.length > 0) return { images: urls };
+    } catch (err) {
+        console.warn(`[Gelbooru] falhou (${err.message}) — tentando Rule34`);
+    }
+
+    // Fallback: Rule34
+    try {
+        const urls = await getImagesRule34(tags, rating, limit, scoreExpr);
+        if (urls && urls.length > 0) return { images: urls };
+    } catch (err) {
+        console.error(`[Rule34] falhou: ${err.message}`);
+    }
+
+    return { error: "❌ Nenhuma imagem encontrada (Gelbooru e Rule34 falharam)." };
 }
 
 async function getTagSuggestions(tag) {
@@ -128,7 +186,10 @@ async function getTagSuggestions(tag) {
         limit:   5,
     });
     try {
-        const res = await fetch(`https://gelbooru.com/index.php?${params}`, { headers: { "User-Agent": "DiscordBot/1.0" } });
+        const res = await fetch(`https://gelbooru.com/index.php?${params}`, {
+            headers: { "User-Agent": "DiscordBot/1.0" },
+            signal: AbortSignal.timeout(5000),
+        });
         const data = await res.json();
         if (!Array.isArray(data?.tag)) return [];
         return data.tag.map(t => t.name);
@@ -136,6 +197,25 @@ async function getTagSuggestions(tag) {
 }
 
 const MAX_FILE_SIZE = 7 * 1024 * 1024; // 7MB — margem de segurança abaixo do limite do Discord
+
+async function downloadImage(url) {
+    const referer = url.includes("rule34") ? "https://rule34.xxx/" : "https://gelbooru.com/";
+
+    const res = await fetch(url, {
+        headers: { "User-Agent": "Mozilla/5.0", "Referer": referer },
+        signal: AbortSignal.timeout(15000),
+    });
+
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    const contentLength = parseInt(res.headers.get("content-length") || "0");
+    if (contentLength > MAX_FILE_SIZE) throw new Error(`grande demais (${(contentLength/1024/1024).toFixed(1)}MB)`);
+
+    const buffer = Buffer.from(await res.arrayBuffer());
+    if (buffer.length > MAX_FILE_SIZE) throw new Error(`buffer grande demais (${(buffer.length/1024/1024).toFixed(1)}MB)`);
+
+    return buffer;
+}
 
 async function buildImageMessage(imageUrls) {
     if (!imageUrls || imageUrls.length === 0) return null;
@@ -146,45 +226,25 @@ async function buildImageMessage(imageUrls) {
     for (let i = 0; i < imageUrls.length; i++) {
         const url = imageUrls[i];
         try {
-            const res = await fetch(url, {
-                headers: {
-                    "User-Agent": "Mozilla/5.0",
-                    "Referer":    "https://gelbooru.com/",
-                }
-            });
-
-            if (!res.ok) {
-                console.log(`[download] Falhou ${res.status}: ${url}`);
-                continue;
-            }
-
-            // Checa tamanho antes de baixar tudo
-            const contentLength = parseInt(res.headers.get("content-length") || "0");
-            if (contentLength > MAX_FILE_SIZE) {
-                console.log(`[download] Arquivo grande demais (${(contentLength/1024/1024).toFixed(1)}MB), pulando`);
-                continue;
-            }
-
-            const buffer = Buffer.from(await res.arrayBuffer());
-
-            if (buffer.length > MAX_FILE_SIZE) {
-                console.log(`[download] Buffer grande demais (${(buffer.length/1024/1024).toFixed(1)}MB), pulando`);
-                continue;
-            }
-
+            const buffer   = await downloadImage(url);
             const ext      = url.split(".").pop().split("?")[0] || "jpg";
             const fileName = `image_${i}.${ext}`;
-
             attachments.push(new AttachmentBuilder(buffer, { name: fileName }));
             embeds.push(new EmbedBuilder().setImage(`attachment://${fileName}`).setColor(0xFF6699));
-
+            console.log(`[download] ✓ image_${i}.${ext}`);
         } catch (err) {
-            console.log(`[download] Erro: ${err.message}`);
+            console.log(`[download] Falhou (${err.message}) — usando embed direto`);
+            // Fallback: manda URL direto no embed (funciona se o Discord conseguir carregar)
+            embeds.push(new EmbedBuilder().setImage(url).setColor(0xFF6699));
         }
     }
 
-    if (attachments.length === 0) return null;
-    return { attachments, embeds };
+    // Se tiver attachments, usa eles; senão manda só os embeds com URL direta
+    if (attachments.length > 0) {
+        return { attachments, embeds: embeds.slice(0, attachments.length) };
+    }
+    // Embeds com URL direta (sem attachment)
+    return { attachments: [], embeds };
 }
 // ==================== TAG DO DIA ====================
 const TAG_POOL_FILE       = "tag_pool.json";
@@ -392,7 +452,7 @@ async function sendImages() {
     await channel.send({
         content: `🏷️ Tag do dia: \`${dailyTag}\``,
         embeds: built.embeds,
-        files:  built.attachments,
+        ...(built.attachments.length > 0 ? { files: built.attachments } : {}),
     });
 }
 
@@ -526,7 +586,7 @@ client.on("interactionCreate", async interaction => {
                 await interaction.editReply({
                     content: `🎨 \`${tags}\` — rating: ${rating}`,
                     embeds: built.embeds,
-                    files:  built.attachments,
+                    ...(built.attachments.length > 0 ? { files: built.attachments } : {}),
                 });
                 break;
             }
