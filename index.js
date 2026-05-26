@@ -48,7 +48,7 @@ function toGelbooruRating(rating) {
 
 function toRule34Rating(rating) {
     // Rule34 usa rating como tag: rating:general, rating:questionable etc
-    const map = { general: "rating:general", safe: "rating:general", sensitive: "rating:sensitive", questionable: "rating:questionable", explicit: "rating:explicit" };
+    const map = { general: "rating:general", safe: "rating:general", sensitive: "rating:questionable", questionable: "rating:questionable", explicit: "rating:explicit" };
     return map[rating] || "rating:questionable";
 }
 
