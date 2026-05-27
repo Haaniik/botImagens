@@ -47,7 +47,7 @@ function toGelbooruRating(rating) {
 }
 
 function toRule34Rating(rating) {
-    // Rule34 usa rating como tag: rating:general, rating:questionable etc
+    // Rule34 não tem "sensitive" — mapeia pra questionable
     const map = { general: "rating:general", safe: "rating:general", sensitive: "rating:questionable", questionable: "rating:questionable", explicit: "rating:explicit" };
     return map[rating] || "rating:questionable";
 }
@@ -65,6 +65,21 @@ function gelbooruParams(extra = {}) {
 }
 
 // ── Gelbooru ──────────────────────────────────────────────────
+async function gelbooruFetch(params) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 6000);
+    try {
+        const res = await fetch(`https://gelbooru.com/index.php?${params}`, {
+            headers: { "User-Agent": "DiscordBot/1.0" },
+            signal: controller.signal,
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
 async function getImagesGelbooru(tags, rating, limit, scoreExpr) {
     const ratingTag = `rating:${toGelbooruRating(rating)}`;
     const noVideo   = "-webm -mp4 -animated_gif -video";
@@ -74,26 +89,14 @@ async function getImagesGelbooru(tags, rating, limit, scoreExpr) {
     const pid    = Math.floor(Math.random() * 50);
     const params = gelbooruParams({ tags: finalTags, limit: 100, pid });
 
-    const res = await fetch(`https://gelbooru.com/index.php?${params}`, {
-        headers: { "User-Agent": "DiscordBot/1.0" },
-        signal: AbortSignal.timeout(8000),
-    });
-    if (!res.ok) throw new Error(`Gelbooru HTTP ${res.status}`);
-
-    const data  = await res.json();
+    let data = await gelbooruFetch(params);
     let posts = data?.post;
 
     if (!Array.isArray(posts) || posts.length === 0) {
         if (pid > 0) {
             const params2 = gelbooruParams({ tags: finalTags, limit: 100, pid: 0 });
-            const res2 = await fetch(`https://gelbooru.com/index.php?${params2}`, {
-                headers: { "User-Agent": "DiscordBot/1.0" },
-                signal: AbortSignal.timeout(8000),
-            });
-            if (res2.ok) {
-                const data2 = await res2.json();
-                posts = data2?.post;
-            }
+            data  = await gelbooruFetch(params2);
+            posts = data?.post;
         }
     }
 
@@ -517,6 +520,20 @@ const commands = [
         .addChannelOption(o => o.setName("canal").setDescription("Canal").setRequired(true)),
 
     new SlashCommandBuilder()
+        .setName("addtag")
+        .setDescription("Adiciona uma tag ao filtro permanente (ex: -nipples, blue_hair)")
+        .addStringOption(o => o.setName("tag").setDescription("Tag a adicionar").setRequired(true)),
+
+    new SlashCommandBuilder()
+        .setName("removetag")
+        .setDescription("Remove uma tag do filtro permanente")
+        .addStringOption(o => o.setName("tag").setDescription("Tag a remover").setRequired(true)),
+
+    new SlashCommandBuilder()
+        .setName("listtags")
+        .setDescription("Mostra as tags do filtro permanente"),
+
+    new SlashCommandBuilder()
         .setName("testpost")
         .setDescription("Força o envio imediato"),
 
@@ -600,6 +617,53 @@ client.on("interactionCreate", async interaction => {
                 const newTag  = getDailyTag();
                 const poolType = isOddDay() ? "series 🎌" : "geral 🏷️";
                 await interaction.reply(`🔄 Tag do dia atualizada para: \`${newTag}\` (pool ${poolType})`);
+                break;
+            }
+
+            case "addtag": {
+                const tag = interaction.options.getString("tag").trim();
+                const current = config.tags?.trim() || "";
+                const tagList = current.split(/\s+/).filter(Boolean);
+
+                if (tagList.includes(tag)) {
+                    return interaction.reply(`⚠️ A tag \`${tag}\` já está no filtro.`);
+                }
+
+                tagList.push(tag);
+                config.tags = tagList.join(" ");
+                fs.writeFileSync("config.json", JSON.stringify(config, null, 2));
+                await interaction.reply(`✅ Tag adicionada: \`${tag}\`
+Filtro atual: \`${config.tags}\``);
+                break;
+            }
+
+            case "removetag": {
+                const tag = interaction.options.getString("tag").trim();
+                const current = config.tags?.trim() || "";
+                const tagList = current.split(/\s+/).filter(Boolean);
+
+                if (!tagList.includes(tag)) {
+                    return interaction.reply(`⚠️ A tag \`${tag}\` não está no filtro.`);
+                }
+
+                config.tags = tagList.filter(t => t !== tag).join(" ");
+                fs.writeFileSync("config.json", JSON.stringify(config, null, 2));
+                await interaction.reply(`✅ Tag removida: \`${tag}\`
+Filtro atual: \`${config.tags || "(vazio)"}\``);
+                break;
+            }
+
+            case "listtags": {
+                const current = config.tags?.trim() || "";
+                const tagList = current.split(/\s+/).filter(Boolean);
+                if (tagList.length === 0) {
+                    return interaction.reply("📋 Nenhuma tag no filtro permanente.");
+                }
+                const pos = tagList.filter(t => !t.startsWith("-")).map(t => `\`${t}\``).join(", ") || "nenhuma";
+                const neg = tagList.filter(t =>  t.startsWith("-")).map(t => `\`${t}\``).join(", ") || "nenhuma";
+                await interaction.reply(`📋 **Tags do filtro permanente:**
+➕ Positivas: ${pos}
+➖ Negativas: ${neg}`);
                 break;
             }
 
