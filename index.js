@@ -66,18 +66,13 @@ function gelbooruParams(extra = {}) {
 
 // ── Gelbooru ──────────────────────────────────────────────────
 async function gelbooruFetch(params) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 6000);
-    try {
-        const res = await fetch(`https://gelbooru.com/index.php?${params}`, {
-            headers: { "User-Agent": "DiscordBot/1.0" },
-            signal: controller.signal,
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.json();
-    } finally {
-        clearTimeout(timer);
-    }
+    // Usa fetch nativo com timeout isolado pra não interferir com o Discord.js
+    const res = await fetch(`https://gelbooru.com/index.php?${params}`, {
+        headers: { "User-Agent": "DiscordBot/1.0" },
+        signal: AbortSignal.timeout(6000),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
 }
 
 async function getImagesGelbooru(tags, rating, limit, scoreExpr) {
@@ -161,7 +156,9 @@ async function getImages(tags = "", rating = "sensitive", limit = 1, scoreExpr =
         const urls = await getImagesGelbooru(tags, rating, limit, scoreExpr);
         if (urls && urls.length > 0) return { images: urls };
     } catch (err) {
-        console.warn(`[Gelbooru] falhou (${err.message}) — tentando Rule34`);
+        const reason = err.name === "TimeoutError" || err.name === "AbortError"
+            ? "timeout" : err.message;
+        console.warn(`[Gelbooru] falhou (${reason}) — tentando Rule34`);
     }
 
     // Fallback: Rule34
