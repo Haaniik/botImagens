@@ -36,7 +36,10 @@ const OWNER_ID = "115936058943864836";
 // Configurações do bot — ficam no config.json (pode compartilhar)
 let config = JSON.parse(fs.readFileSync('config.json', 'utf8'));
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages] });
+const client = new Client({
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
+    rest: { timeout: 60000 },  // 60s pra uploads de imagem grandes
+});
 client.commands = new Collection();
 
 // ==================== GELBOORU + RULE34 ====================
